@@ -1,37 +1,28 @@
 # NEON STREAMING
 
-Aplicativo web em português para organizar e assistir episódios MP4 mantidos em pastas do Google Drive.
+Versão estática do catálogo de animes para publicar no **GitHub Pages**. Os vídeos permanecem no Google Drive; o site autentica o usuário no próprio navegador e transmite os arquivos por solicitações parciais, sem baixar o MP4 inteiro para a memória.
 
-## Requisitos
+## Publicar no GitHub Pages
 
-- Node.js 20 ou superior.
-- Um projeto no Google Cloud com a **Google Drive API** ativada.
-- Um OAuth Client ID do tipo **Aplicativo da Web**.
+1. Envie o conteúdo desta pasta para a raiz do repositório GitHub, incluindo `public/` e `.github/workflows/pages.yml`. **Não envie `.env`, arquivos JSON de credenciais OAuth, tokens ou client secrets.**
+2. No Google Cloud Console, ative a **Google Drive API** e configure a tela de consentimento OAuth. Para uma conta pessoal, use o tipo de usuário compatível com sua conta e adicione sua conta à lista de usuários de teste quando o app estiver em teste.
+3. Crie ou reutilize um OAuth Client ID do tipo **Aplicativo da Web**. Em **Authorized JavaScript origins**, adicione:
+   - `http://localhost:4173` para testar localmente;
+   - `https://SEU-USUARIO.github.io` para o GitHub Pages.
 
-## Configuração do Google Drive
+   Use apenas a origem: **não** acrescente o caminho `/nome-do-repositorio`.
+4. Abra `public/config.js` e substitua `COLE_SEU_CLIENT_ID.apps.googleusercontent.com` pelo Client ID. Client IDs OAuth de aplicativos web são identificadores públicos; não coloque um `client_secret` nesse arquivo.
+5. No GitHub, abra **Settings → Pages**, escolha **GitHub Actions** como origem. O workflow `Publicar no GitHub Pages` envia o conteúdo de `public/` e publica o site após um push para `main` ou `master`.
+6. Abra o endereço exibido em **Settings → Pages**, conecte a conta Google e compartilhe com ela uma pasta do Drive contendo episódios MP4.
 
-1. No Google Cloud Console, ative a Google Drive API e configure a tela de consentimento OAuth.
-2. Crie um OAuth Client ID para aplicativo web e adicione `http://localhost:4173` às origens JavaScript autorizadas. Se o aplicativo for publicado em outro endereço, adicione também a origem HTTPS correspondente.
-3. Copie `.env.example` para `.env` e preencha `GOOGLE_CLIENT_ID` com o Client ID criado.
-4. Se a tela OAuth estiver em modo de teste, adicione as contas Google que vão usar o app como usuários de teste.
-5. Inicie o app:
+## Testar localmente
 
-   ```powershell
-   node server.js
-   ```
+Na raiz desta pasta, execute `node server.js` e abra `http://localhost:4173`. O arquivo `.env` não é necessário para o login desta versão estática; o Client ID fica em `public/config.js`.
 
-6. Abra `http://localhost:4173`, conecte a conta Google e compartilhe com ela uma pasta do Drive contendo os episódios MP4.
-7. Em **Nova obra**, informe o título e cole o link da pasta (ou o ID). Sinopse e capa são opcionais. Os episódios precisam estar diretamente dentro da pasta; a ordem é definida pelos nomes dos arquivos, com ordenação numérica natural.
+## Como funciona e limitações
 
-O NEON solicita somente acesso de leitura ao Drive. O servidor usa esse acesso para listar os episódios e transmitir o conteúdo com suporte a solicitações parciais (Range), sem copiar nem armazenar os vídeos. A pasta precisa estar acessível à conta conectada.
-
-## Recursos
-
-- Catálogo de obras com sinopse, capa e edição das informações.
-- Reprodução com progresso retomável, barra de busca, pausa, tela cheia e saltos de 10 segundos.
-- Duplo clique no lado esquerdo/direito do vídeo para voltar/avançar 10 segundos.
-- Botão para pular a abertura, com tempo configurável por obra.
-- Marcação como assistido depois de 3 minutos efetivamente reproduzidos.
-- Favoritos, continuar assistindo, próximo episódio automático opcional e aviso ao terminar um episódio.
-
-O catálogo é salvo em `data/catalog.json` no servidor. Favoritos e progresso ficam no armazenamento local do navegador usado para assistir. Em uma publicação para mais pessoas, use HTTPS e um servidor com armazenamento persistente para o catálogo; cada pessoa também precisa ter permissão de leitura dos arquivos do Drive.
+- O OAuth usa somente `https://www.googleapis.com/auth/drive.readonly`. O token de acesso fica no IndexedDB do navegador e é usado pelo Service Worker para enviar pedidos de vídeo com suporte a `Range`; os vídeos não são armazenados pelo site.
+- O catálogo de obras, favoritos e progresso ficam no armazenamento local de **cada navegador**. Não existe conta NEON nem sincronização entre aparelhos nesta versão estática.
+- Cada usuário precisa conectar uma conta Google com permissão para ler os arquivos. O catálogo adicionado por um navegador não aparece automaticamente para outros usuários. Compartilhar um catálogo comum exigiria um backend ou um banco de dados.
+- A lista considera arquivos MP4 diretamente dentro da pasta escolhida; a ordem usa os nomes dos episódios com ordenação numérica natural.
+- A Google Drive API e o OAuth precisam estar corretamente configurados. Se o app OAuth estiver em modo de teste, somente os usuários de teste podem autorizar a conexão.

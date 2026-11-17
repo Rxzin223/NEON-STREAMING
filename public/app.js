@@ -2,6 +2,10 @@
   const FAVORITES_KEY = "neon:favorites";
   const PROGRESS_KEY = "neon:progress";
   const AUTO_NEXT_KEY = "neon:auto-next";
+  const WORKS_KEY = "neon:works";
+  const CREDENTIALS_DB = "neon-drive";
+  const CREDENTIALS_STORE = "credentials";
+  const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
   const views = {
     home: document.getElementById("main-view"),
     details: document.getElementById("details-view"),
@@ -41,16 +45,100 @@
     return Math.max(...items.map(([, item]) => Math.min(100, item.currentTime / item.duration * 100)));
   };
 
-  async function api(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: "same-origin",
-      ...options,
-      headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers }
+  function openCredentialsDatabase() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(CREDENTIALS_DB, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(CREDENTIALS_STORE)) {
+          request.result.createObjectStore(CREDENTIALS_STORE);
+        }
+      };
+      request.onerror = () => reject(request.error || new Error("Não foi possível abrir o armazenamento local do login."));
+      request.onsuccess = () => resolve(request.result);
     });
-    const contentType = response.headers.get("content-type") || "";
-    const result = contentType.includes("application/json") ? await response.json() : null;
-    if (!response.ok) throw new Error(result?.error || `Falha na solicitação (${response.status}).`);
+  }
+
+  async function readCredentials() {
+    const database = await openCredentialsDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(CREDENTIALS_STORE, "readonly");
+      const request = transaction.objectStore(CREDENTIALS_STORE).get("session");
+      request.onsuccess = () => { database.close(); resolve(request.result || null); };
+      request.onerror = () => { database.close(); reject(request.error || new Error("Não foi possível ler o login salvo.")); };
+    });
+  }
+
+  async function writeCredentials(credentials) {
+    const database = await openCredentialsDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(CREDENTIALS_STORE, "readwrite");
+      transaction.objectStore(CREDENTIALS_STORE).put(credentials, "session");
+      transaction.oncomplete = () => { database.close(); resolve(); };
+      transaction.onerror = () => { database.close(); reject(transaction.error || new Error("Não foi possível salvar o login.")); };
+    });
+  }
+
+  async function clearCredentials() {
+    const database = await openCredentialsDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(CREDENTIALS_STORE, "readwrite");
+      transaction.objectStore(CREDENTIALS_STORE).delete("session");
+      transaction.oncomplete = () => { database.close(); resolve(); };
+      transaction.onerror = () => { database.close(); reject(transaction.error || new Error("Não foi possível encerrar o login.")); };
+    });
+  }
+
+  async function driveApi(url) {
+    if (!state.session?.accessToken || state.session.expiresAt <= Date.now()) {
+      setConnected(null);
+      throw new Error("Sua autorização expirou. Conecte-se novamente ao Google Drive.");
+    }
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { Authorization: `Bearer ${state.session.accessToken}` },
+        credentials: "omit",
+        cache: "no-store"
+      });
+    } catch {
+      throw new Error("Não foi possível acessar a Google Drive API. Confira a internet e as origens OAuth.");
+    }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result.error?.message || `A Google Drive API respondeu com status ${response.status}.`);
+    }
     return result;
+  }
+
+  async function inspectDriveFolder(folderId) {
+    const url = new URL(`${DRIVE_API}/${encodeURIComponent(folderId)}`);
+    url.searchParams.set("fields", "id,mimeType");
+    url.searchParams.set("supportsAllDrives", "true");
+    const folder = await driveApi(url);
+    if (folder.mimeType !== "application/vnd.google-apps.folder") {
+      throw new Error("O ID informado não corresponde a uma pasta do Google Drive.");
+    }
+  }
+
+  async function listDriveEpisodes(folderId) {
+    const episodes = [];
+    let pageToken = "";
+    do {
+      const url = new URL(DRIVE_API);
+      url.searchParams.set("q", `'${folderId}' in parents and trashed = false`);
+      url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType,size,modifiedTime)");
+      url.searchParams.set("pageSize", "1000");
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("includeItemsFromAllDrives", "true");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const result = await driveApi(url);
+      episodes.push(...(result.files || []));
+      pageToken = result.nextPageToken || "";
+    } while (pageToken);
+    return episodes
+      .filter((file) => file.mimeType?.startsWith("video/") && /\.mp4$/i.test(file.name))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))
+      .map((file, index) => ({ ...file, episodeNumber: index + 1 }));
   }
 
   function showToast(message) {
@@ -75,9 +163,9 @@
 
   async function connectDrive() {
     try {
-      const config = await api("/api/config");
-      if (!config.clientId) {
-        showToast("Configure GOOGLE_CLIENT_ID no arquivo .env para conectar o Drive.");
+      const clientId = window.NEON_CONFIG?.googleClientId || "";
+      if (!clientId || clientId.startsWith("COLE_SEU_CLIENT_ID")) {
+        showToast("Configure seu Client ID OAuth em public/config.js.");
         return;
       }
       if (!window.google?.accounts?.oauth2) {
@@ -85,7 +173,7 @@
         return;
       }
       state.oauthClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: config.clientId,
+        client_id: clientId,
         scope: "https://www.googleapis.com/auth/drive.readonly",
         callback: async (tokenResponse) => {
           if (tokenResponse.error) {
@@ -93,19 +181,21 @@
             return;
           }
           try {
-            const session = await api("/api/session", {
-              method: "POST",
-              body: JSON.stringify({ accessToken: tokenResponse.access_token })
-            });
+            const session = {
+              accessToken: tokenResponse.access_token,
+              expiresAt: Date.now() + Math.max(1, Number(tokenResponse.expires_in) || 3600) * 1000
+            };
+            await writeCredentials(session);
             setConnected(session);
-            await loadWorks();
             showToast("Google Drive conectado.");
           } catch (error) {
             showToast(error.message);
           }
         }
       });
-      state.oauthClient.requestAccessToken({ prompt: state.session ? "" : "consent" });
+      state.oauthClient.requestAccessToken({
+        prompt: state.session?.expiresAt > Date.now() ? "" : "consent"
+      });
     } catch (error) {
       showToast(error.message);
     }
@@ -113,21 +203,34 @@
 
   async function initializeSession() {
     try {
-      const session = await api("/api/session");
-      setConnected(session.connected ? session : null);
-    } catch {
-      setConnected(null);
-    }
-    await loadWorks();
-  }
-
-  async function loadWorks() {
-    try {
-      state.works = await api("/api/works");
-      renderWorks();
+      if (!("serviceWorker" in navigator)) {
+        throw new Error("Este navegador não oferece suporte ao streaming seguro do Google Drive.");
+      }
+      await navigator.serviceWorker.register(new URL("./sw.js", document.baseURI), {
+        scope: new URL(".", document.baseURI).pathname
+      });
+      await navigator.serviceWorker.ready;
+      const session = await readCredentials();
+      if (session?.accessToken && session.expiresAt > Date.now()) {
+        setConnected(session);
+      } else {
+        if (session) await clearCredentials();
+        setConnected(null);
+      }
     } catch (error) {
+      setConnected(null);
       showToast(error.message);
     }
+    loadWorks();
+  }
+
+  function loadWorks() {
+    state.works = readStore(WORKS_KEY, []);
+    renderWorks();
+  }
+
+  function saveWorks() {
+    localStorage.setItem(WORKS_KEY, JSON.stringify(state.works));
   }
 
   function cardMarkup(work) {
@@ -188,7 +291,7 @@
 
   function extractFolderId(value) {
     const input = value.trim();
-    const match = input.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    const match = input.match(/\/folders\/([a-zA-Z0-9_-]+)/) || input.match(/[?&]id=([a-zA-Z0-9_-]+)/);
     return match ? match[1] : input;
   }
 
@@ -216,18 +319,24 @@
     submitButton.disabled = true;
     document.getElementById("form-error").textContent = "";
     try {
-      const work = await api("/api/works", {
-        method: "POST",
-        body: JSON.stringify({
-          title: form.get("title"),
-          folderId: extractFolderId(form.get("folder")),
-          synopsis: form.get("synopsis"),
-          cover: form.get("cover"),
-          openingSkipSeconds: Number(form.get("openingSkipSeconds"))
-        })
-      });
+      const folderId = extractFolderId(form.get("folder"));
+      if (!/^[a-zA-Z0-9_-]{1,256}$/.test(folderId)) {
+        throw new Error("Informe o link ou ID válido de uma pasta do Google Drive.");
+      }
+      await inspectDriveFolder(folderId);
+      const work = {
+        id: crypto.randomUUID(),
+        title: String(form.get("title")).trim(),
+        folderId,
+        synopsis: String(form.get("synopsis") || "").trim(),
+        cover: String(form.get("cover") || "").trim(),
+        openingSkipSeconds: Math.min(900, Math.max(0, Number(form.get("openingSkipSeconds")) || 0)),
+        createdAt: new Date().toISOString()
+      };
+      state.works.unshift(work);
+      saveWorks();
       closeModal();
-      await loadWorks();
+      loadWorks();
       showToast("Obra adicionada ao catálogo.");
       await openWork(work);
     } catch (error) {
@@ -261,7 +370,7 @@
       <div class="episodes-header"><h2>Episódios</h2><span class="section-count" data-episode-count>Carregando do Drive...</span></div>
       <div class="episode-list" data-episode-list><div class="error-panel">Buscando arquivos MP4 na pasta compartilhada...</div></div>`;
     try {
-      state.episodes = await api(`/api/drive/files?folderId=${encodeURIComponent(work.folderId)}`);
+      state.episodes = await listDriveEpisodes(work.folderId);
       renderEpisodes(work);
     } catch (error) {
       details.querySelector("[data-episode-count]").textContent = "";
@@ -360,7 +469,7 @@
     const saved = progressFor(work.id, episode.id);
     const introSeconds = Number(work.openingSkipSeconds) || 0;
     lastSavedTime = -1;
-    video.src = `/api/drive/files/${encodeURIComponent(episode.id)}/content`;
+    video.src = new URL(`drive-media/${encodeURIComponent(episode.id)}`, document.baseURI).href;
     video.addEventListener("loadedmetadata", () => {
       views.player.querySelector("[data-duration]").textContent = formatTime(video.duration);
       const resumeAt = saved.currentTime > 5 && saved.currentTime < video.duration - 5 ? saved.currentTime : 0;
@@ -552,11 +661,15 @@
       const synopsis = window.prompt("Sinopse (opcional):", work.synopsis || "");
       if (synopsis === null) return;
       try {
-        await api(`/api/works/${encodeURIComponent(work.id)}`, {
-          method: "PUT",
-          body: JSON.stringify({ title, synopsis, cover: work.cover, openingSkipSeconds: work.openingSkipSeconds })
-        });
-        await loadWorks();
+        const updatedWork = state.works.find((item) => item.id === work.id);
+        if (!title.trim()) {
+          showToast("O nome da obra não pode ficar vazio.");
+          return;
+        }
+        updatedWork.title = title.trim().slice(0, 120);
+        updatedWork.synopsis = synopsis.trim().slice(0, 1000);
+        saveWorks();
+        loadWorks();
         await openWork(state.works.find((item) => item.id === work.id));
       } catch (error) { showToast(error.message); }
       return;
@@ -564,9 +677,10 @@
     if (event.target.closest("[data-delete-work]")) {
       if (!window.confirm(`Remover "${state.selectedWork.title}" do catálogo? Os arquivos do Drive não serão apagados.`)) return;
       try {
-        await api(`/api/works/${encodeURIComponent(state.selectedWork.id)}`, { method: "DELETE" });
+        state.works = state.works.filter((item) => item.id !== state.selectedWork.id);
+        saveWorks();
         showView("home");
-        await loadWorks();
+        loadWorks();
         showToast("Obra removida do catálogo; os arquivos do Drive continuam intactos.");
       } catch (error) { showToast(error.message); }
     }
