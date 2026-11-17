@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#090a12">
   <meta name="description" content="Seu catálogo de animes conectado ao Google Drive.">
   <title>NEON STREAMING</title>
-  <link rel="stylesheet" href="../public/styles.css?v=3">
+  <link rel="stylesheet" href="./public/styles.css?v=3">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="../public/config.js?v=1" defer></script>
-  <script src="../public/app.js?v=3" defer></script>
+  <script src="./public/config.js?v=1" defer></script>
+  <script src="./public/app.js?v=3" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -99,7 +99,7 @@
         </label>
         <label class="field-label">Sinopse <span class="optional">(opcional)</span><textarea name="synopsis" rows="3" maxlength="1000" placeholder="Um resumo da história..."></textarea></label>
         <label class="field-label">URL da capa <span class="optional">(opcional)</span><input name="cover" type="url" placeholder="https://..."></label>
-        <label class="field-label">Pular abertura até <span class="optional">(segundos)</span><input name="openingSkipSeconds" type="number" min="0" max="900" value="90"><small>O botão de pular aparece no início de cada episódio. Use 0 para desativar.</small></label>
+        <label class="field-label">Pular abertura até <span class="optional">(segundos)</span><input name="openingSkipSeconds" type="number" min="0" max="900" value="90"><small>O botão de pular abertura aparecerá após esse tempo.</small></label>
         <div class="form-error" id="form-error" role="alert"></div>
         <div class="modal-actions"><button class="button button-outline" type="button" id="cancel-modal">Cancelar</button><button class="button button-primary" type="submit">Salvar obra</button></div>
       </form>
